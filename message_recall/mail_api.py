@@ -23,6 +23,7 @@ The usage pattern for GmailInterface is:
 
 import imaplib
 import logging
+import re
 
 from credentials_utils import GetUserAccessToken
 from log_utils import GetLogger
@@ -141,7 +142,6 @@ class GmailInterface(object):
   _AUTH_STRING = 'user=%s\1auth=Bearer %s\1\1'
   # Modify this variable to the appropriate 'Trash' label. In the U.S., it
   # should be 'Trash'. In the U.K. it should be 'Bin'.
-  _LOCALIZED_TRASH_LABEL = 'Trash'
   _SEARCH_MESSAGE_ID = '(HEADER Message-ID <%s>)'
   _SERVER_ADDRESS = 'imap.gmail.com'
   _SERVER_PORT = 993
@@ -149,14 +149,35 @@ class GmailInterface(object):
 
   def __init__(self):
     self._found_indices = {}
-    self._gmail_labels = ['[Gmail]/All Mail', '[Gmail]/Spam']
     self._imap_query = imaplib.IMAP4_SSL(self._SERVER_ADDRESS,
                                          self._SERVER_PORT)
     self._imap_query.debug = self._DEBUG_LEVEL
+    self._gmail_label_types = ['\All', '\Trash', '\Junk']
     self._label_selected = None
     self._last_error = None
     self._user_email = None
 
+  def _MapLabels(self, label_types):
+    """Maps Gmail label types to the localized label name.
+    
+    Args:
+      label_types: list: Gmail label types to lookup localized label name for.
+        example: ['\All', '\Trash', '\Junk']
+        
+    Returns:
+      tuple: localized names of supplied Gmail labels.
+    """
+    list_response_patterm = re.compile(r'\((?P<flags>.*?)\) "(?P<delimiter>.*)" (?P<name>.*)')
+    list_data = _imap_query.list()
+    label_names = None * len(label_types)
+    for line in list_data:
+      flags, delimiter, label_name = list_response_patterm.match(line).groups()
+      flags_list = flags.split(' ')
+      for label_type in label_types:
+        if label_type in flags_list:
+          label_names[label_types.index(label_type)] = label_name
+    return label_names
+    
   def _SelectLabel(self, gmail_label):
     """Selects a folder/label for work. This is active state in the connection.
 
@@ -232,7 +253,8 @@ class GmailInterface(object):
     Returns:
       True if the search found at least one matching message.
     """
-    for gmail_label in self._gmail_labels:
+    gmail_labels = self._MapLabels(self._gmail_label_types)
+    for gmail_label in gmail_labels:
       _LOG.debug('[%s] Searching label %s', self._user_email, gmail_label)
       self._found_indices[gmail_label] = []
       self._SelectLabel(gmail_label)
@@ -258,6 +280,7 @@ class GmailInterface(object):
     Returns:
       True if message successfully purged else False.
     """
+    trash_label = self._MapLabels(['\Trash'])[0]
     _LOG.debug('[%s] Deleting messsage: %s.', self._user_email,
                message_criteria)
     for gmail_label, found_indices in self._found_indices.iteritems():
@@ -265,14 +288,12 @@ class GmailInterface(object):
         continue
       self._SelectLabel(gmail_label)
       for message_index in found_indices:
-        self._imap_query.uid('COPY', message_index,
-                             '[Gmail]/' + self._LOCALIZED_TRASH_LABEL)
+        self._imap_query.uid('COPY', message_index, trash_label)
         self._imap_query.expunge()
       _LOG.debug('[%s] %s messages purged from %s.', self._user_email,
-                 found_indices, gmail_label)
+                 found_indices, trash_label)
 
-    gmail_label = '[Gmail]/' + self._LOCALIZED_TRASH_LABEL
-    self._SelectLabel(gmail_label)
+    self._SelectLabel(trash_label)
     messages_found = 0
     search_query = self._SEARCH_MESSAGE_ID % message_criteria
     unused_type, data = self._imap_query.uid('SEARCH', None, search_query)
